@@ -10,6 +10,21 @@ type
     function GetValue(): integer;
   end;
 
+constructor TCounter.Create(start: integer);
+begin
+  value := start;
+end;
+
+procedure TCounter.Inc();
+begin
+  value := value + 1;
+end;
+
+function TCounter.GetValue(): integer;
+begin
+  GetValue := value;
+end;
+
 var
   c: TCounter;
   x: integer;
