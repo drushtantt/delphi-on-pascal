@@ -1,15 +1,17 @@
 grammar delphi;
 
-/* =======================
-   Parser rules
-   ======================= */
+/* ================= PROGRAM ================= */
 
 program
   : PROGRAM ID SEMI
     (typeSection)?
     (varSection)?
-    block DOT
+    (methodImplSection)?      // 🔥 new
+    block
+    DOT
   ;
+
+/* ================= TYPES ================= */
 
 typeSection
   : TYPE typeDecl+
@@ -48,23 +50,50 @@ methodHeader
   ;
 
 constructorHeader
-  : CONSTRUCTOR qualifiedName formalParams?
+  : CONSTRUCTOR ID formalParams?
   ;
 
 destructorHeader
-  : DESTRUCTOR qualifiedName formalParams?
+  : DESTRUCTOR ID formalParams?
   ;
 
 procedureHeader
-  : PROCEDURE qualifiedName formalParams?
+  : PROCEDURE ID formalParams?
   ;
 
 functionHeader
-  : FUNCTION qualifiedName formalParams? COLON typeName
+  : FUNCTION ID formalParams? COLON typeName
   ;
 
-qualifiedName
-  : ID (DOT ID)?
+/* ================= METHOD IMPLEMENTATIONS ================= */
+
+methodImplSection
+  : methodImpl+
+  ;
+
+methodImpl
+  : methodImplHeader SEMI block SEMI
+  ;
+
+methodImplHeader
+  : CONSTRUCTOR ID DOT ID formalParams?
+  | DESTRUCTOR  ID DOT ID formalParams?
+  | PROCEDURE   ID DOT ID formalParams?
+  | FUNCTION    ID DOT ID formalParams? COLON typeName
+  ;
+
+/* ================= VARS ================= */
+
+varSection
+  : VAR varDecl+
+  ;
+
+varDecl
+  : idList COLON typeName SEMI
+  ;
+
+idList
+  : ID (COMMA ID)*
   ;
 
 formalParams
@@ -80,17 +109,7 @@ typeName
   | ID
   ;
 
-varSection
-  : VAR varDecl+
-  ;
-
-varDecl
-  : idList COLON typeName SEMI
-  ;
-
-idList
-  : ID (COMMA ID)*
-  ;
+/* ================= STATEMENTS ================= */
 
 block
   : BEGIN stmtList? END
@@ -112,7 +131,6 @@ compoundStmt
   ;
 
 emptyStmt
-  : /* empty */
   ;
 
 assignment
@@ -128,40 +146,25 @@ callStmt
   ;
 
 callExpr
-  : ID actualParams?                          # builtinOrProcCall
-  | ID DOT ID actualParams?                   # methodOrStaticCall
+  : ID actualParams?                 # builtinOrProcCall
+  | ID DOT ID actualParams?          # methodOrStaticCall
   ;
 
 actualParams
   : LPAREN (expr (COMMA expr)*)? RPAREN
   ;
 
+/* ================= EXPRESSIONS ================= */
+
 expr
-  : expr op=('*'|'/') expr                    # mulDiv
-  | expr op=('+'|'-') expr                    # addSub
-  | INT                                       # intLit
-  | lvalue                                    # lvalExpr
-  | LPAREN expr RPAREN                        # parens
+  : expr op=('*'|'/') expr           # mulDiv
+  | expr op=('+'|'-') expr           # addSub
+  | INT                              # intLit
+  | lvalue                           # lvalExpr
+  | LPAREN expr RPAREN               # parens
   ;
 
-methodImplSection
-  : (methodImpl)+
-  ;
-
-methodImpl
-  : methodImplHeader SEMI block SEMI
-  ;
-
-methodImplHeader
-  : CONSTRUCTOR ID DOT ID formalParams?
-  | DESTRUCTOR  ID DOT ID formalParams?
-  | PROCEDURE   ID DOT ID formalParams?
-  | FUNCTION    ID DOT ID formalParams? COLON typeName
-  ;
-
-/* =======================
-   Lexer rules
-   ======================= */
+/* ================= LEXER ================= */
 
 PROGRAM     : 'program';
 TYPE        : 'type';
