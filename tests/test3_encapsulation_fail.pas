@@ -9,6 +9,16 @@ type
     function GetValue(): integer;
   end;
 
+constructor TSecret.Create(x: integer);
+begin
+  value := x;
+end;
+
+function TSecret.GetValue(): integer;
+begin
+  GetValue := value;
+end;
+
 var
   s: TSecret;
   y: integer;
@@ -18,7 +28,7 @@ begin
   y := s.GetValue();
   writeln(y);     { expect 99 }
 
-  { Should FAIL: private field from outside }
+  { Should FAIL (private field from outside) }
   y := s.value;
   writeln(y);
 end.
