@@ -1,20 +1,21 @@
-# Delphi Mini (ANTLR4 + Java)
+# Delphi Full (ANTLR4 + Java)
 
-This project implements a small Pascal-like language extended with Delphi-style classes:
+Implements a small Pascal-like language with Delphi-style OO:
 - Classes and objects
-- Constructors and destructors (explicit call)
-- Encapsulation via public/private/protected sections
-- Integer terminal I/O: readln(x), writeln(expr)
+- Constructors & destructors (explicit call like obj.Destroy())
+- Encapsulation: public/private/protected sections enforced at runtime
+- Integer I/O: readln(x), writeln(expr)
+- Full AST-walking execution of method bodies (constructor/procedure/function/destructor)
 
 ## Requirements
-- Java 17+ (or 11+)
-- ANTLR 4 (complete jar)
+- Java 11+ (17 recommended)
+- ANTLR 4 complete jar
 
-## Build Steps
+## Build
 
-### 1) Generate lexer/parser + visitor
+### 1) Generate parser/lexer + visitor
 From project root:
 
-**Mac/Linux**
+Mac/Linux:
 ```bash
 java -jar antlr-4.13.1-complete.jar -Dlanguage=Java -visitor -no-listener delphi.g4 -o gen
