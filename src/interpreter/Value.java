@@ -21,4 +21,13 @@ public final class Value {
         if (kind != Kind.INT) throw new RuntimeException("Expected integer, got " + kind);
         return intVal;
     }
+
+    @Override
+    public String toString() {
+        return switch (kind) {
+            case INT -> Integer.toString(intVal);
+            case OBJ -> "<object " + objVal.klass.name + ">";
+            case NIL -> "nil";
+        };
+    }
 }
