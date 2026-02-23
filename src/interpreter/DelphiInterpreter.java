@@ -8,71 +8,18 @@ public class DelphiInterpreter extends delphiBaseVisitor<Value> {
     private final RuntimeEnv env = new RuntimeEnv();
     private final Scanner scanner = new Scanner(System.in);
 
-    // Temporary store of declared member visibilities while reading class bodies:
+    // When parsing class members, visibility section affects subsequent members
     private ClassDef.Vis currentVis = ClassDef.Vis.PUBLIC;
 
     @Override
     public Value visitProgram(delphiParser.ProgramContext ctx) {
-        // 1) types/classes
         if (ctx.typeSection() != null) visit(ctx.typeSection());
-
-        // 2) global vars
         if (ctx.varSection() != null) visit(ctx.varSection());
-
-        // 3) method impls (if present): in this mini language, put them AFTER type/var but BEFORE main begin/end
-        // If you want strictly Pascal layout, you can extend grammar.
-        // Here, we detect extra tokens by trying to parse methodImplSection is not possible (not in program rule),
-        // so simplest: include method implementations inside main file BEFORE main block as procedures/functions using separate parsing.
-        // Instead, we embed method implementations INSIDE the main block? Not good.
-        //
-        // EASIEST: Put method implementations BEFORE the main block by including them as "statement"? Not.
-        //
-        // So: In this template, method implementations are written INSIDE the main block BEFORE any usage.
-        // BUT our grammar doesn't allow methodImpl in statements.
-        //
-        // Fix: We will allow method implementations at global level by using a second parse pass:
-        // We'll interpret by scanning the token stream is complex.
-        //
-        // Practical solution: Put method implementations inside main block as normal procedures is not Delphi.
-        //
-        // Therefore: we will interpret method implementations by reading them from class member DECLARATIONS ONLY? Not enough.
-        //
-        // -> So we will REQUIRE method implementations to appear BEFORE main block and we adjust grammar:
-        // Not possible now since grammar already provided in this message.
-        //
-        // To keep this fully working without you editing again:
-        // We'll accept method bodies NOT separately implemented; instead, we interpret "inline method bodies" not in grammar.
-        //
-        // ----
-        // ✅ Better: We do a simple approach:
-        // We support method implementations as standalone at top-level by making users put them as the FIRST statements in main block.
-        // We'll add a special hack: treat calls to constructor/method as no-op unless you fill them.
-        //
-        // That’s unacceptable.
-        //
-        // ----
-        // So: We will interpret WITHOUT separate method implementation section by using:
-        // method headers are declared in class, and method bodies are ALSO placed as top-level procedures with names "TClass.Method".
-        //
-        // We'll support procedure/function declarations inside main block by not using them; also not in grammar.
-        //
-        // ----
-        // OK: Let's do it properly:
-        // We'll interpret ONLY the main block here.
-        //
-        // NOTE: This interpreter expects method bodies to be declared using the methodImpl syntax
-        // inside the main block is impossible.
-        //
-        // ----
-        // The correct fix is to slightly extend grammar program rule:
-        // add (methodImplSection)? before block.
-        //
-        // I'll do that fix here in code by assuming you added it. See README: one-line change.
-        //
+        if (ctx.methodImplSection() != null) visit(ctx.methodImplSection());
         return visit(ctx.block());
     }
 
-    /* ---------- Type / Class ---------- */
+    /* ===================== TYPE / CLASS ===================== */
 
     @Override
     public Value visitTypeSection(delphiParser.TypeSectionContext ctx) {
@@ -80,18 +27,12 @@ public class DelphiInterpreter extends delphiBaseVisitor<Value> {
             String className = td.ID().getText();
             ClassDef cd = new ClassDef(className);
 
-            // parse members + visibility
             currentVis = ClassDef.Vis.PUBLIC;
-            delphiParser.ClassMembersContext mem = td.classType().classMembers();
-            for (var child : mem.children) {
+
+            delphiParser.ClassMembersContext members = td.classType().classMembers();
+            for (var child : members.children) {
                 if (child instanceof delphiParser.VisibilitySectionContext vs) {
-                    String v = vs.getStart().getText().toLowerCase();
-                    currentVis = switch (v) {
-                        case "private" -> ClassDef.Vis.PRIVATE;
-                        case "protected" -> ClassDef.Vis.PROTECTED;
-                        default -> ClassDef.Vis.PUBLIC;
-                    };
-                    // members under this section:
+                    currentVis = parseVis(vs.getStart().getText());
                     for (delphiParser.ClassMemberDeclContext cm : vs.classMemberDecl()) {
                         registerClassMember(cd, cm, currentVis);
                     }
@@ -105,42 +46,84 @@ public class DelphiInterpreter extends delphiBaseVisitor<Value> {
         return Value.nil();
     }
 
-    private void registerClassMember(ClassDef cd, delphiParser.ClassMemberDeclContext cm, ClassDef.Vis vis) {
-        if (cm.fieldDecl() != null) {
-            var fd = cm.fieldDecl();
-            List<String> names = fd.idList().ID().stream().map(t -> t.getText()).collect(Collectors.toList());
-            for (String f : names) {
-                cd.fields.add(f);
-                cd.fieldVis.put(f, vis);
-            }
-            return;
-        }
-        if (cm.methodHeader() != null) {
-            var mh = cm.methodHeader();
-            String qn = mh.getChild(1).getText(); // qualifiedName text
-            // qn can be "Create" or "TCounter.Create" depending on how written; we allow both
-            String methodName = qn.contains(".") ? qn.split("\\.")[1] : qn;
-
-            boolean isCtor = mh.constructorHeader() != null;
-            boolean isDtor = mh.destructorHeader() != null;
-            boolean isFunc = mh.functionHeader() != null;
-
-            cd.methodVis.put(methodName, vis);
-
-            // store a placeholder; real body attached later when we see methodImpl
-            cd.methods.put(methodName, new ClassDef.MethodInfo(cd.name, methodName, isFunc, null, List.of()));
-
-            if (isCtor) cd.constructor = cd.methods.get(methodName);
-            if (isDtor) cd.destructor  = cd.methods.get(methodName);
-        }
+    private ClassDef.Vis parseVis(String s) {
+        String v = s.toLowerCase();
+        return switch (v) {
+            case "private" -> ClassDef.Vis.PRIVATE;
+            case "protected" -> ClassDef.Vis.PROTECTED;
+            default -> ClassDef.Vis.PUBLIC;
+        };
     }
 
-    /* ---------- Vars ---------- */
+    private void registerClassMember(ClassDef cd, delphiParser.ClassMemberDeclContext cm, ClassDef.Vis vis) {
+        if (cm.fieldDecl() != null) {
+            List<String> names = cm.fieldDecl().idList().ID().stream().map(t -> t.getText()).toList();
+            for (String f : names) cd.fields.put(f, vis);
+            return;
+        }
+
+        // method header: declare visibility; impl comes later in methodImplSection
+        var mh = cm.methodHeader();
+        boolean isCtor = mh.constructorHeader() != null;
+        boolean isDtor = mh.destructorHeader() != null;
+        boolean isFunc = mh.functionHeader() != null;
+
+        String methodName =
+                isCtor ? mh.constructorHeader().ID().getText() :
+                isDtor ? mh.destructorHeader().ID().getText() :
+                (mh.procedureHeader() != null) ? mh.procedureHeader().ID().getText() :
+                mh.functionHeader().ID().getText();
+
+        cd.methodVis.put(methodName, vis);
+
+        // placeholder (body attached after we parse methodImplSection)
+        cd.methods.putIfAbsent(methodName, new ClassDef.MethodInfo(cd.name, methodName, isFunc, List.of(), null));
+    }
+
+    /* ===================== METHOD IMPLEMENTATIONS ===================== */
+
+    @Override
+    public Value visitMethodImplSection(delphiParser.MethodImplSectionContext ctx) {
+        for (delphiParser.MethodImplContext mi : ctx.methodImpl()) {
+            attachMethodImpl(mi);
+        }
+        return Value.nil();
+    }
+
+    private void attachMethodImpl(delphiParser.MethodImplContext mi) {
+        var h = mi.methodImplHeader();
+
+        String className = h.ID(0).getText();
+        String methodName = h.ID(1).getText();
+
+        ClassDef cd = env.classes.get(className);
+        if (cd == null) throw new RuntimeException("Method implementation for unknown class: " + className);
+
+        boolean isFunction = h.FUNCTION() != null;
+
+        List<String> paramNames = new ArrayList<>();
+        if (h.formalParams() != null) {
+            for (var fp : h.formalParams().formalParam()) {
+                for (var idTok : fp.idList().ID()) {
+                    paramNames.add(idTok.getText());
+                }
+            }
+        }
+
+        ClassDef.MethodInfo info = new ClassDef.MethodInfo(className, methodName, isFunction, paramNames, mi.block());
+        cd.methods.put(methodName, info);
+
+        // Heuristic: constructor named Create, destructor named Destroy (common Delphi)
+        if (h.CONSTRUCTOR() != null) cd.constructor = info;
+        if (h.DESTRUCTOR() != null) cd.destructor = info;
+    }
+
+    /* ===================== VARS ===================== */
 
     @Override
     public Value visitVarSection(delphiParser.VarSectionContext ctx) {
         for (delphiParser.VarDeclContext vd : ctx.varDecl()) {
-            List<String> names = vd.idList().ID().stream().map(t -> t.getText()).collect(Collectors.toList());
+            List<String> names = vd.idList().ID().stream().map(t -> t.getText()).toList();
             String type = vd.typeName().getText().toLowerCase();
 
             for (String n : names) {
@@ -151,7 +134,7 @@ public class DelphiInterpreter extends delphiBaseVisitor<Value> {
         return Value.nil();
     }
 
-    /* ---------- Block / Statements ---------- */
+    /* ===================== BLOCK / STATEMENTS ===================== */
 
     @Override
     public Value visitBlock(delphiParser.BlockContext ctx) {
@@ -161,25 +144,46 @@ public class DelphiInterpreter extends delphiBaseVisitor<Value> {
 
     @Override
     public Value visitStmtList(delphiParser.StmtListContext ctx) {
-        for (delphiParser.StatementContext s : ctx.statement()) visit(s);
+        for (delphiParser.StatementContext s : ctx.statement()) {
+            visit(s);
+            // (Optional) early return: not used in this subset
+            if (env.frame().hasReturn) break;
+        }
+        return Value.nil();
+    }
+
+    @Override
+    public Value visitCompoundStmt(delphiParser.CompoundStmtContext ctx) {
+        if (ctx.stmtList() != null) visit(ctx.stmtList());
         return Value.nil();
     }
 
     @Override
     public Value visitAssignment(delphiParser.AssignmentContext ctx) {
-        // lvalue := expr
         String left = ctx.lvalue().getText();
         Value rhs = visit(ctx.expr());
 
+        // Function return convention: inside function, "FuncName := expr" sets return value
+        Frame f = env.frame();
+        if (f.currentFunctionName != null && left.equalsIgnoreCase(f.currentFunctionName)) {
+            f.returnValue = rhs;
+            f.hasReturn = true;
+            return Value.nil();
+        }
+
         if (left.contains(".")) {
             String[] parts = left.split("\\.");
-            Value base = env.getVar(parts[0]);
-            if (base.kind != Value.Kind.OBJ) throw new RuntimeException("Not an object: " + parts[0]);
-            ObjectInstance obj = base.objVal;
+            String baseName = parts[0];
             String field = parts[1];
 
-            ClassDef cd = obj.klass;
-            enforceFieldVisibility(cd, field);
+            Value base = env.getVar(baseName);
+            if (base.kind != Value.Kind.OBJ) throw new RuntimeException("Not an object: " + baseName);
+
+            ObjectInstance obj = base.objVal;
+            enforceFieldVisibility(obj.klass, field);
+
+            if (!obj.fields.containsKey(field))
+                throw new RuntimeException("Unknown field: " + obj.klass.name + "." + field);
 
             obj.fields.put(field, rhs);
             return Value.nil();
@@ -189,6 +193,8 @@ public class DelphiInterpreter extends delphiBaseVisitor<Value> {
         return Value.nil();
     }
 
+    /* ===================== CALLS ===================== */
+
     @Override
     public Value visitBuiltinOrProcCall(delphiParser.BuiltinOrProcCallContext ctx) {
         String name = ctx.ID().getText().toLowerCase();
@@ -196,23 +202,22 @@ public class DelphiInterpreter extends delphiBaseVisitor<Value> {
 
         if (name.equals("writeln")) {
             if (args.isEmpty()) { System.out.println(); return Value.nil(); }
-            for (Value v : args) {
-                if (v.kind == Value.Kind.INT) System.out.println(v.asInt());
-                else System.out.println("object");
-            }
+            for (Value v : args) System.out.println(v.kind == Value.Kind.INT ? v.asInt() : v.toString());
             return Value.nil();
         }
 
         if (name.equals("readln")) {
             if (ctx.actualParams() == null || ctx.actualParams().expr().size() != 1)
                 throw new RuntimeException("readln expects exactly 1 argument");
-            // argument must be lvalue (ID)
+
+            // must be simple variable (integer)
             var e = ctx.actualParams().expr(0);
             if (!(e instanceof delphiParser.LvalExprContext lv))
                 throw new RuntimeException("readln argument must be a variable");
 
             String varName = lv.lvalue().getText();
             if (varName.contains(".")) throw new RuntimeException("readln only supports simple integer vars");
+
             int x = scanner.nextInt();
             env.setVar(varName, Value.ofInt(x));
             return Value.nil();
@@ -223,33 +228,35 @@ public class DelphiInterpreter extends delphiBaseVisitor<Value> {
 
     @Override
     public Value visitMethodOrStaticCall(delphiParser.MethodOrStaticCallContext ctx) {
-        String left = ctx.ID(0).getText();   // could be obj var OR class name
+        String left = ctx.ID(0).getText();   // could be className or varName
         String member = ctx.ID(1).getText(); // method name
         List<Value> args = evalActualParams(ctx.actualParams());
 
-        // Decide static (class) call vs instance call:
+        // Static call: ClassName.Method(...)
         if (env.classes.containsKey(left)) {
-            // static call like TCounter.Create(...)
             ClassDef cd = env.classes.get(left);
-            if (!member.equalsIgnoreCase("Create") && cd.constructor == null)
-                throw new RuntimeException("Only constructor static calls supported, got: " + member);
 
-            if (member.equalsIgnoreCase("Create")) {
-                ObjectInstance obj = new ObjectInstance(cd);
-
-                // If you want constructor body execution, attach methodImpls (bonus extension).
-                // For now, we still support initialization by allowing first constructor param to set a field named "value" if exists.
-                if (!args.isEmpty() && cd.fields.contains("value")) {
-                    obj.fields.put("value", Value.ofInt(args.get(0).asInt()));
+            // Only constructor static call is required: TClass.Create(...)
+            if (cd.constructor == null) {
+                // if they used a different ctor name, still allow "TClass.<CtorName>"
+                var mi = cd.methods.get(member);
+                if (mi != null && isConstructorImpl(mi, cd)) {
+                    return executeConstructor(cd, mi, args);
                 }
-
-                return Value.ofObj(obj);
+                throw new RuntimeException("No constructor implemented for class: " + cd.name);
             }
 
-            throw new RuntimeException("Unsupported static call: " + left + "." + member);
+            if (!member.equalsIgnoreCase(cd.constructor.methodName)) {
+                // allow calling the actual declared ctor method name
+                var mi = cd.methods.get(member);
+                if (mi != null && isConstructorImpl(mi, cd)) return executeConstructor(cd, mi, args);
+                throw new RuntimeException("Unsupported static call: " + cd.name + "." + member + " (expected constructor)");
+            }
+
+            return executeConstructor(cd, cd.constructor, args);
         }
 
-        // instance call like c.Inc() or c.GetValue()
+        // Instance call: obj.Method(...)
         Value recv = env.getVar(left);
         if (recv.kind != Value.Kind.OBJ) throw new RuntimeException("Not an object: " + left);
 
@@ -258,30 +265,98 @@ public class DelphiInterpreter extends delphiBaseVisitor<Value> {
 
         enforceMethodVisibility(cd, member);
 
-        // Implement a couple of common demo methods without full method bodies:
-        // Inc(): value := value + 1
-        if (member.equalsIgnoreCase("Inc")) {
-            if (!cd.fields.contains("value")) throw new RuntimeException("No field 'value' to Inc()");
-            int v = obj.fields.get("value").asInt();
-            obj.fields.put("value", Value.ofInt(v + 1));
+        ClassDef.MethodInfo mi = cd.methods.get(member);
+        if (mi == null || mi.body == null) throw new RuntimeException("Method not implemented: " + cd.name + "." + member);
+
+        if (member.equalsIgnoreCase(cd.destructor != null ? cd.destructor.methodName : "Destroy")) {
+            executeDestructor(cd, obj, mi, args);
             return Value.nil();
         }
 
-        // GetValue(): returns value
-        if (member.equalsIgnoreCase("GetValue")) {
-            if (!cd.fields.contains("value")) throw new RuntimeException("No field 'value' to GetValue()");
-            return obj.fields.get("value");
-        }
-
-        // Destroy(): prints nothing by default (explicit dtor support can be added)
-        if (member.equalsIgnoreCase("Destroy")) {
-            return Value.nil();
-        }
-
-        throw new RuntimeException("Method not implemented in interpreter: " + cd.name + "." + member);
+        return executeInstanceMethod(cd, obj, mi, args);
     }
 
-    /* ---------- Expressions ---------- */
+    private boolean isConstructorImpl(ClassDef.MethodInfo mi, ClassDef cd) {
+        // minimal: treat first attached CONSTRUCTOR as constructor; we already set cd.constructor for CONSTRUCTOR impl.
+        return cd.constructor != null && mi.methodName.equals(cd.constructor.methodName);
+    }
+
+    /* ===================== EXECUTION ENGINE ===================== */
+
+    private Value executeConstructor(ClassDef cd, ClassDef.MethodInfo ctor, List<Value> args) {
+        ObjectInstance obj = new ObjectInstance(cd);
+
+        // Run ctor body with self + params
+        Frame f = new Frame();
+        bindParams(f, ctor.paramNames, args);
+
+        env.pushFrame(f);
+        env.classCtx.push(cd);
+        env.selfCtx.push(obj);
+
+        try {
+            visit(ctor.body);
+        } finally {
+            env.selfCtx.pop();
+            env.classCtx.pop();
+            env.popFrame();
+        }
+
+        return Value.ofObj(obj);
+    }
+
+    private void executeDestructor(ClassDef cd, ObjectInstance obj, ClassDef.MethodInfo dtor, List<Value> args) {
+        Frame f = new Frame();
+        bindParams(f, dtor.paramNames, args);
+
+        env.pushFrame(f);
+        env.classCtx.push(cd);
+        env.selfCtx.push(obj);
+
+        try {
+            visit(dtor.body);
+        } finally {
+            env.selfCtx.pop();
+            env.classCtx.pop();
+            env.popFrame();
+        }
+    }
+
+    private Value executeInstanceMethod(ClassDef cd, ObjectInstance obj, ClassDef.MethodInfo mi, List<Value> args) {
+        Frame f = new Frame();
+        bindParams(f, mi.paramNames, args);
+
+        if (mi.isFunction) {
+            f.currentFunctionName = mi.methodName; // allow "MethodName := expr" return convention
+            f.returnValue = Value.ofInt(0);        // default return
+            f.hasReturn = false;
+        }
+
+        env.pushFrame(f);
+        env.classCtx.push(cd);
+        env.selfCtx.push(obj);
+
+        try {
+            visit(mi.body);
+            if (mi.isFunction) return env.frame().returnValue;
+            return Value.nil();
+        } finally {
+            env.selfCtx.pop();
+            env.classCtx.pop();
+            env.popFrame();
+        }
+    }
+
+    private void bindParams(Frame f, List<String> paramNames, List<Value> args) {
+        if (args.size() != paramNames.size()) {
+            throw new RuntimeException("Argument count mismatch. Expected " + paramNames.size() + " got " + args.size());
+        }
+        for (int i = 0; i < paramNames.size(); i++) {
+            f.vars.put(paramNames.get(i), args.get(i));
+        }
+    }
+
+    /* ===================== EXPRESSIONS ===================== */
 
     @Override
     public Value visitIntLit(delphiParser.IntLitContext ctx) {
@@ -290,20 +365,32 @@ public class DelphiInterpreter extends delphiBaseVisitor<Value> {
 
     @Override
     public Value visitLvalExpr(delphiParser.LvalExprContext ctx) {
-        String name = ctx.lvalue().getText();
-        if (name.contains(".")) {
-            String[] parts = name.split("\\.");
-            Value base = env.getVar(parts[0]);
-            if (base.kind != Value.Kind.OBJ) throw new RuntimeException("Not an object: " + parts[0]);
-            ObjectInstance obj = base.objVal;
+        String lv = ctx.lvalue().getText();
+
+        if (lv.contains(".")) {
+            String[] parts = lv.split("\\.");
+            String baseName = parts[0];
             String field = parts[1];
+
+            // support "self.field" by allowing baseName == "self"
+            ObjectInstance obj;
+            if (baseName.equalsIgnoreCase("self")) {
+                obj = env.currentSelf();
+            } else {
+                Value base = env.getVar(baseName);
+                if (base.kind != Value.Kind.OBJ) throw new RuntimeException("Not an object: " + baseName);
+                obj = base.objVal;
+            }
 
             enforceFieldVisibility(obj.klass, field);
 
-            if (!obj.fields.containsKey(field)) throw new RuntimeException("No such field: " + field);
+            if (!obj.fields.containsKey(field))
+                throw new RuntimeException("Unknown field: " + obj.klass.name + "." + field);
+
             return obj.fields.get(field);
         }
-        return env.getVar(name);
+
+        return env.getVar(lv);
     }
 
     @Override
@@ -329,26 +416,27 @@ public class DelphiInterpreter extends delphiBaseVisitor<Value> {
         return visit(ctx.expr());
     }
 
-    /* ---------- Helpers ---------- */
+    /* ===================== HELPERS ===================== */
 
     private List<Value> evalActualParams(delphiParser.ActualParamsContext ap) {
         if (ap == null) return List.of();
-        List<Value> out = new ArrayList<>();
-        for (delphiParser.ExprContext e : ap.expr()) out.add(visit(e));
-        return out;
+        return ap.expr().stream().map(this::visit).collect(Collectors.toList());
     }
 
     private void enforceFieldVisibility(ClassDef cd, String field) {
-        ClassDef.Vis vis = cd.fieldVis.getOrDefault(field, ClassDef.Vis.PUBLIC);
-        if (vis == ClassDef.Vis.PRIVATE && !env.inClassContext(cd)) {
-            throw new RuntimeException("Private field access denied: " + cd.name + "." + field);
+        ClassDef.Vis vis = cd.fields.getOrDefault(field, ClassDef.Vis.PUBLIC);
+
+        // Private/protected allowed only within class context in this non-inheritance subset
+        if ((vis == ClassDef.Vis.PRIVATE || vis == ClassDef.Vis.PROTECTED) && !env.inClassContext(cd)) {
+            throw new RuntimeException("Field access denied (" + vis + "): " + cd.name + "." + field);
         }
     }
 
     private void enforceMethodVisibility(ClassDef cd, String method) {
         ClassDef.Vis vis = cd.methodVis.getOrDefault(method, ClassDef.Vis.PUBLIC);
-        if (vis == ClassDef.Vis.PRIVATE && !env.inClassContext(cd)) {
-            throw new RuntimeException("Private method access denied: " + cd.name + "." + method);
+
+        if ((vis == ClassDef.Vis.PRIVATE || vis == ClassDef.Vis.PROTECTED) && !env.inClassContext(cd)) {
+            throw new RuntimeException("Method access denied (" + vis + "): " + cd.name + "." + method);
         }
     }
 }
