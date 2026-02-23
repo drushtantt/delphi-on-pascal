@@ -1,0 +1,195 @@
+grammar delphi;
+
+/* =======================
+   Parser rules
+   ======================= */
+
+program
+  : PROGRAM ID SEMI
+    (typeSection)?
+    (varSection)?
+    block DOT
+  ;
+
+typeSection
+  : TYPE typeDecl+
+  ;
+
+typeDecl
+  : ID EQ classType SEMI
+  ;
+
+classType
+  : CLASS classMembers END
+  ;
+
+classMembers
+  : (visibilitySection | classMemberDecl)*
+  ;
+
+visibilitySection
+  : (PRIVATE | PUBLIC | PROTECTED) COLON classMemberDecl*
+  ;
+
+classMemberDecl
+  : fieldDecl
+  | methodHeader SEMI
+  ;
+
+fieldDecl
+  : idList COLON typeName SEMI
+  ;
+
+methodHeader
+  : constructorHeader
+  | destructorHeader
+  | procedureHeader
+  | functionHeader
+  ;
+
+constructorHeader
+  : CONSTRUCTOR qualifiedName formalParams?
+  ;
+
+destructorHeader
+  : DESTRUCTOR qualifiedName formalParams?
+  ;
+
+procedureHeader
+  : PROCEDURE qualifiedName formalParams?
+  ;
+
+functionHeader
+  : FUNCTION qualifiedName formalParams? COLON typeName
+  ;
+
+qualifiedName
+  : ID (DOT ID)?
+  ;
+
+formalParams
+  : LPAREN formalParam (SEMI formalParam)* RPAREN
+  ;
+
+formalParam
+  : idList COLON typeName
+  ;
+
+typeName
+  : INTEGER
+  | ID
+  ;
+
+varSection
+  : VAR varDecl+
+  ;
+
+varDecl
+  : idList COLON typeName SEMI
+  ;
+
+idList
+  : ID (COMMA ID)*
+  ;
+
+block
+  : BEGIN stmtList? END
+  ;
+
+stmtList
+  : statement (SEMI statement)* SEMI?
+  ;
+
+statement
+  : assignment
+  | callStmt
+  | compoundStmt
+  | emptyStmt
+  ;
+
+compoundStmt
+  : BEGIN stmtList? END
+  ;
+
+emptyStmt
+  : /* empty */
+  ;
+
+assignment
+  : lvalue ASSIGN expr
+  ;
+
+lvalue
+  : ID (DOT ID)?
+  ;
+
+callStmt
+  : callExpr
+  ;
+
+callExpr
+  : ID actualParams?                          # builtinOrProcCall
+  | ID DOT ID actualParams?                   # methodOrStaticCall
+  ;
+
+actualParams
+  : LPAREN (expr (COMMA expr)*)? RPAREN
+  ;
+
+expr
+  : expr op=('*'|'/') expr                    # mulDiv
+  | expr op=('+'|'-') expr                    # addSub
+  | INT                                       # intLit
+  | lvalue                                    # lvalExpr
+  | LPAREN expr RPAREN                        # parens
+  ;
+
+methodImplSection
+  : (methodImpl)+
+  ;
+
+methodImpl
+  : methodImplHeader SEMI block SEMI
+  ;
+
+methodImplHeader
+  : CONSTRUCTOR ID DOT ID formalParams?
+  | DESTRUCTOR  ID DOT ID formalParams?
+  | PROCEDURE   ID DOT ID formalParams?
+  | FUNCTION    ID DOT ID formalParams? COLON typeName
+  ;
+
+/* =======================
+   Lexer rules
+   ======================= */
+
+PROGRAM     : 'program';
+TYPE        : 'type';
+VAR         : 'var';
+CLASS       : 'class';
+PRIVATE     : 'private';
+PUBLIC      : 'public';
+PROTECTED   : 'protected';
+CONSTRUCTOR : 'constructor';
+DESTRUCTOR  : 'destructor';
+PROCEDURE   : 'procedure';
+FUNCTION    : 'function';
+BEGIN       : 'begin';
+END         : 'end';
+INTEGER     : 'integer';
+
+ASSIGN      : ':=';
+EQ          : '=';
+COLON       : ':';
+SEMI        : ';';
+COMMA       : ',';
+DOT         : '.';
+LPAREN      : '(';
+RPAREN      : ')';
+
+ID          : [a-zA-Z_][a-zA-Z0-9_]*;
+INT         : [0-9]+;
+
+WS          : [ \t\r\n]+ -> skip;
+COMMENT1    : '{' .*? '}' -> skip;
+COMMENT2    : '//' ~[\r\n]* -> skip;
