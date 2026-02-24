@@ -5,8 +5,8 @@ grammar delphi;
 program
   : PROGRAM ID SEMI
     (typeSection)?
+    (methodImplSection)?
     (varSection)?
-    (methodImplSection)?      // 🔥 new
     block
     DOT
   ;
@@ -18,11 +18,25 @@ typeSection
   ;
 
 typeDecl
-  : ID EQ classType SEMI
+  : ID EQ classType SEMI       # classTypeDecl
+  | ID EQ interfaceType SEMI    # interfaceTypeDecl
   ;
 
 classType
-  : CLASS classMembers END
+  : CLASS (LPAREN ID RPAREN)? (IMPLEMENTS idList)? classMembers END
+  ;
+
+interfaceType
+  : INTERFACE interfaceMembers END
+  ;
+
+interfaceMembers
+  : (interfaceMethodDecl)*
+  ;
+
+interfaceMethodDecl
+  : procedureHeader SEMI
+  | functionHeader SEMI
   ;
 
 classMembers
@@ -97,7 +111,7 @@ idList
   ;
 
 formalParams
-  : LPAREN formalParam (SEMI formalParam)* RPAREN
+  : LPAREN (formalParam (SEMI formalParam)*)? RPAREN
   ;
 
 formalParam
@@ -112,11 +126,12 @@ typeName
 /* ================= STATEMENTS ================= */
 
 block
-  : BEGIN stmtList? END
+  : BEGIN stmtList END
   ;
 
 stmtList
   : statement (SEMI statement)* SEMI?
+  |
   ;
 
 statement
@@ -127,10 +142,11 @@ statement
   ;
 
 compoundStmt
-  : BEGIN stmtList? END
+  : BEGIN stmtList END
   ;
 
 emptyStmt
+  :
   ;
 
 assignment
@@ -161,6 +177,7 @@ expr
   | expr op=('+'|'-') expr           # addSub
   | INT                              # intLit
   | lvalue                           # lvalExpr
+  | callExpr                         # callExprAlt
   | LPAREN expr RPAREN               # parens
   ;
 
@@ -180,6 +197,8 @@ FUNCTION    : 'function';
 BEGIN       : 'begin';
 END         : 'end';
 INTEGER     : 'integer';
+INTERFACE   : 'interface';
+IMPLEMENTS  : 'implements';
 
 ASSIGN      : ':=';
 EQ          : '=';
